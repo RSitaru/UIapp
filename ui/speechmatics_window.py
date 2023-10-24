@@ -1,54 +1,41 @@
 import tkinter as tk
 from tkinter import ttk, filedialog
 from models import speechmatics
+import shutil
+
 
 class SpeechmaticsWindow(tk.Toplevel):
     def __init__(self, master=None):
-        super().__init__(master=master)
+        super().__init__(master)
+        self.master = master
+        self.title("Fereastra Speechmatics")
+        self.geometry("600x400")
 
-        self.title("Fereastră Speechmatics")
-
-        # Set size and center window
-        screen_width = self.winfo_screenwidth()
-        screen_height = self.winfo_screenheight()
-
-        window_width = int(screen_width * 0.4)
-        window_height = int(screen_height * 0.4)
-        
-        position_x = (screen_width // 2) - (window_width // 2)
-        position_y = (screen_height // 2) - (window_height // 2)
-        
-        self.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
-
-        # Attachment Field
-        self.attachment_btn = ttk.Button(self, text="Adaugă Atașamente", command=self.add_attachments)
-        self.attachment_btn.pack(pady=10, padx=20)
-
-        self.attachments_frame = ttk.Frame(self)
-        self.attachments_frame.pack(pady=10, padx=20, fill=tk.X)
-        
         self.attachments = []
 
-        # Submit Button
-        self.submit_btn = ttk.Button(self, text="Transcriere", command=self.submit)
-        self.submit_btn.pack(pady=20)
+        # Create an "Adaugă Atașamente" button to add attachments
+        self.add_button = ttk.Button(self, text="Adaugă Atașamente", command=self.add_attachment)
+        self.add_button.pack(pady=20)
 
-    def add_attachments(self):
-        file_paths = filedialog.askopenfilenames(filetypes=[("Audio Files", "*.mp3;*.wav")])
-        for file_path in file_paths:
-            if file_path and len(self.attachments) < 10:  # Maximum of 10 attachments
-                attachment = Attachment(self.attachments_frame, file_path)
-                attachment.pack(fill=tk.X)
-                self.attachments.append(attachment)
-                if len(self.attachments) == 10:
-                    break
+        # Create a "Transcriere" button to start the transcription process
+        self.transcribe_button = ttk.Button(self, text="Transcriere", command=self.transcribe_attachments)
+        self.transcribe_button.pack(pady=20)
 
-    def submit(self):
-        # Handle attachments
+    def add_attachment(self):
+        file_path = filedialog.askopenfilename(filetypes=[('Audio Files', '*.wav;*.mp3')])
+        if not file_path:
+            return
+        attachment = Attachment(self, file_path)
+        attachment.pack(fill=tk.X, padx=20, pady=5)
+        self.attachments.append(attachment)
+
+    def transcribe_attachments(self):
         for attachment in self.attachments:
-            # TODO: Send each attachment as a separate request
-            # For demonstration, we'll just print the file path for now
-            print(attachment.file_path)
+            callback = lambda result, attach=attachment: attach.set_status("completed")
+            progress_callback = lambda progress, attach=attachment: attach.set_status("started", progress=progress)
+        
+            speechmatics.transcribe_audio_threaded(attachment.file_path, callback, progress_callback)
+
 
 class Attachment(ttk.Frame):
     def __init__(self, parent, file_path):
@@ -56,17 +43,41 @@ class Attachment(ttk.Frame):
         self.file_path = file_path
 
         self.label = ttk.Label(self, text=file_path)
-        self.label.pack(side=tk.LEFT)
+        self.label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        # Small font for loading and cost details
-        small_font = ("Arial", 10)
+        # Download button
+        self.download_button = ttk.Button(self, text="Download", command=self.download_file, state=tk.DISABLED)  # Initially disabled
+        self.download_button.pack(side=tk.RIGHT, padx=5)
 
-        # Loading and cost icons can be added here
-        # Currently adding a dummy label as a placeholder
-        self.info_label = ttk.Label(self, text="Loading... | $0.00", font=small_font)
-        self.info_label.pack(side=tk.RIGHT)
+        # Status rectangle
+        self.status_canvas = tk.Canvas(self, width=100, height=20, bg="white")
+        self.status_canvas.pack(side=tk.RIGHT, padx=5)
+        self.rectangle = self.status_canvas.create_rectangle(5, 5, 5, 15, fill="grey")
+        self.progress_text = self.status_canvas.create_text(50, 10, text="0%", anchor=tk.CENTER)  # Center text
 
-        # The logic for updating the loading status and cost can be added in this class
+    def set_status(self, status, progress=0):
+        if status == "not started":
+            self.status_canvas.itemconfig(self.rectangle, fill="grey")
+            self.status_canvas.itemconfig(self.progress_text, text="0%")
+        elif status == "started":
+            fill_width = progress  # 0 to 99
+            self.status_canvas.coords(self.rectangle, 5, 5, 5 + fill_width, 15)
+            self.status_canvas.itemconfig(self.rectangle, fill="blue")
+            self.status_canvas.itemconfig(self.progress_text, text=f"{progress}%")
+        elif status == "completed":
+            self.status_canvas.coords(self.rectangle, 5, 5, 95, 15)
+            self.status_canvas.itemconfig(self.rectangle, fill="green")
+            self.status_canvas.itemconfig(self.progress_text, text="100%")
+            self.download_button.config(state=tk.NORMAL, style='TButton')  # Enable the download button and change style
+
+    def download_file(self):
+        save_path = filedialog.asksaveasfilename(initialfile=self.file_path.split('/')[-1],
+                                                 filetypes=[('Audio Files', '*.wav;*.mp3')])
+        if not save_path:
+            return
+        # Copy the processed file to the save_path (assuming the processed file is the same as the original for this example)
+        shutil.copy(self.file_path, save_path)
+
 
 if __name__ == "__main__":
     root = tk.Tk()
