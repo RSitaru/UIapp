@@ -6,7 +6,7 @@ import concurrent.futures
 
 # OpenAI configuration
 openai.organization = "org-2RniczpRsyTC1u0YUI5ebhAa"
-openai.api_key = "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"
+openai.api_key = "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"
 
 ALLOWED_EXTENSIONS_DOCX = {'docx'}
 
