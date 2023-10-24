@@ -1,82 +1,63 @@
-import tkinter as tk
-from tkinter import ttk, filedialog
-from models import speechmatics
-import shutil
+import os
+import tempfile
+import time
+import threading
+from speechmatics.batch_client import BatchClient
 
+# Speechmatics configuration
+SPEECHMATICS_API_KEY = os.getenv("SPEECHMATICS_API_KEY")
 
-class SpeechmaticsWindow(tk.Toplevel):
-    def __init__(self, master=None):
-        super().__init__(master)
-        self.master = master
-        self.title("Fereastra Speechmatics")
-        self.geometry("600x400")
+ALLOWED_EXTENSIONS_AUDIO = {'wav', 'mp3'}
 
-        self.attachments = []
+def allowed_audio_file(filename, allowed_extensions=ALLOWED_EXTENSIONS_AUDIO):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
 
-        # Create an "Adaugă Atașamente" button to add attachments
-        self.add_button = ttk.Button(self, text="Adaugă Atașamente", command=self.add_attachment)
-        self.add_button.pack(pady=20)
+def transcribe_audio_threaded(file_path, callback, progress_callback):
+    """
+    Starts the transcription in a new thread and uses a callback to return the results.
+    """
+    def thread_target():
+        result = transcribe_audio(file_path, progress_callback)
+        callback(result)
 
-        # Create a "Transcriere" button to start the transcription process
-        self.transcribe_button = ttk.Button(self, text="Transcriere", command=self.transcribe_attachments)
-        self.transcribe_button.pack(pady=20)
+    threading.Thread(target=thread_target).start()
 
-    def add_attachment(self):
-        file_path = filedialog.askopenfilename(filetypes=[('Audio Files', '*.wav;*.mp3')])
-        if not file_path:
-            return
-        attachment = Attachment(self, file_path)
-        attachment.pack(fill=tk.X, padx=20, pady=5)
-        self.attachments.append(attachment)
+def transcribe_audio(file_path, progress_callback):
+    if not allowed_audio_file(file_path):
+        return 'Invalid file type'
 
-    def transcribe_attachments(self):
-        for attachment in self.attachments:
-            callback = lambda result, attach=attachment: attach.set_status("completed")
-            progress_callback = lambda progress, attach=attachment: attach.set_status("started", progress=progress)
-        
-            speechmatics.transcribe_audio_threaded(attachment.file_path, callback, progress_callback)
+    try:
+        with open(file_path, 'rb') as f:
+            response_content = process_audio(f, os.path.basename(file_path), progress_callback)
+        return response_content
+    except Exception as e:
+        return f"Error processing the audio file: {str(e)}"
 
+def process_audio(file, filename, progress_callback):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{filename.rsplit('.', 1)[1]}") as temp_audio:
+        temp_audio.write(file.read())
 
-class Attachment(ttk.Frame):
-    def __init__(self, parent, file_path):
-        super().__init__(parent)
-        self.file_path = file_path
+        with BatchClient(SPEECHMATICS_API_KEY) as client:
+            # Create new job with Romanian language code
+            transcription_config = {
+                "type": "transcription",
+                "transcription_config": {"language": "ro"}}
 
-        self.label = ttk.Label(self, text=file_path)
-        self.label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            job_id = client.submit_job(
+                audio=temp_audio.name,
+                transcription_config=transcription_config
+            )
 
-        # Status rectangle
-        self.status_canvas = tk.Canvas(self, width=100, height=20, bg="white")
-        self.status_canvas.pack(side=tk.RIGHT, padx=5)
-        self.rectangle = self.status_canvas.create_rectangle(5, 5, 95, 15, fill="grey")
+            for i in range(10):  # Checking the status 10 times over a minute
+                time.sleep(6)
+                progress_callback(i * 10)  # Send progress: 0, 10, 20, ... , 90
+                job_response = client.check_job_status(str(job_id))
+                if job_response.get("job", {}).get("status") == "done":
+                    break
+            else:
+                return "Transcription took too long. Please try again later."
 
-        # Download button
-        self.download_button = ttk.Button(self, text="Download", command=self.download_file, state=tk.DISABLED)  # Initially disabled
-        self.download_button.pack(side=tk.RIGHT, padx=5)
+            transcript = client.get_job_result(str(job_id))
 
-    def set_status(self, status, progress=0):
-        if status == "not started":
-            self.status_canvas.itemconfig(self.rectangle, fill="grey")
-        elif status == "started":
-            fill_width = progress  # 0 to 100
-            self.status_canvas.coords(self.rectangle, 5, 5, 5 + fill_width, 15)
-            self.status_canvas.itemconfig(self.rectangle, fill="blue")
-        elif status == "completed":
-            self.status_canvas.coords(self.rectangle, 5, 5, 95, 15)
-            self.status_canvas.itemconfig(self.rectangle, fill="green")
-            self.download_button.config(state=tk.NORMAL, style='TButton')  # Enable the download button and change style
-
-    def download_file(self):
-        save_path = filedialog.asksaveasfilename(initialfile=self.file_path.split('/')[-1],
-                                                 filetypes=[('Audio Files', '*.wav;*.mp3')])
-        if not save_path:
-            return
-        # Copy the processed file to the save_path (assuming the processed file is the same as the original for this example)
-        shutil.copy(self.file_path, save_path)
-
-
-if __name__ == "__main__":
-    root = tk.Tk()
-    root.withdraw()  # Hide the main window
-    window = SpeechmaticsWindow(master=root)
-    window.mainloop()
+    full_transcription = " ".join(result["alternatives"][0]["content"] for result in transcript["results"])
+    return f"Transcription Result for {filename}:\n\n{full_transcription}"
